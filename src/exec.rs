@@ -259,8 +259,8 @@ pub fn new_function_id() -> u64 {
     NEXT_FUNCTION_ID.fetch_add(1, Ordering::Relaxed)
 }
 pub struct FunctionID {
-    id: u64,
-    name: String,
+    _id: u64,
+    _name: String,
     arg_types: Vec<Type>,
     return_type: Type,
 }

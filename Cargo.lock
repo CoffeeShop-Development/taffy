@@ -119,6 +119,7 @@ dependencies = [
 [[package]]
 name = "tactical"
 version = "0.4.0"
+source = "git+https://github.com/CoffeeShop-Development/tactical#2ff0dcf2d80eb2203d0e0bfa942e60604fd015c9"
 dependencies = [
  "paste",
 ]
