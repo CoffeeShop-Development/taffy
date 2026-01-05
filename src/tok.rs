@@ -15,6 +15,7 @@ macro_rules! verbatim {
         #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
         pub struct $name(pub $crate::Span);
         impl<__D> $crate::Syntax<$token_type, $error_type, __D> for $name {
+            type Item = ();
             fn from_tokens(
                 tokens: &mut $crate::cursor!($token_type),
                 context: $crate::ParseContext<__D>,
@@ -40,6 +41,9 @@ macro_rules! verbatim {
             }
             fn span(&self) -> $crate::Span {
                 self.0
+            }
+            fn to_item(self) -> Self::Item {
+                ()
             }
         }
     };
@@ -129,6 +133,7 @@ pub struct Ident {
     pub escaped: bool,
 }
 impl<D> Syntax<Token, ParseError, D> for Ident {
+    type Item = String;
     fn from_tokens(tokens: &mut cursor!(Token), context: ParseContext<D>) -> Result<Self> {
         match tokens.next() {
             Some((span, Token::IdentifierLike { repr, escaped })) => Ok(Self {
@@ -158,6 +163,9 @@ impl<D> Syntax<Token, ParseError, D> for Ident {
     fn span(&self) -> Span {
         self.span
     }
+    fn to_item(self) -> Self::Item {
+        self.repr
+    }
 }
 impl Display for Ident {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -178,28 +186,29 @@ pub enum DelimiterKind {
 impl DelimiterKind {
     pub fn opening(&self) -> char {
         match self {
-            DelimiterKind::Parenthesis => '(',
-            DelimiterKind::Bracket => '[',
-            DelimiterKind::Brace => '{',
+            Self::Parenthesis => '(',
+            Self::Bracket => '[',
+            Self::Brace => '{',
         }
     }
     pub fn closing(&self) -> char {
         match self {
-            DelimiterKind::Parenthesis => ')',
-            DelimiterKind::Bracket => ']',
-            DelimiterKind::Brace => '}',
+            Self::Parenthesis => ')',
+            Self::Bracket => ']',
+            Self::Brace => '}',
         }
     }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct IntegerLiteral(pub BigInt, pub Span);
+pub struct IntegerLiteral(pub Span, pub BigInt);
 impl Syntax<Token, ParseError, ()> for IntegerLiteral {
+    type Item = BigInt;
     fn from_tokens(tokens: &mut cursor!(Token), context: ParseContext<()>) -> Result<Self> {
         match tokens.clone().next() {
             Some((span, Token::IntegerLiteral(i))) => {
                 tokens.next();
-                Ok(Self(i, span))
+                Ok(Self(span, i))
             }
             Some((span, got)) => Err(ParseError::recoverable(
                 ParseErrorKind::Mismatch(Expected::Integer, Got::InvalidToken(got)),
@@ -212,21 +221,25 @@ impl Syntax<Token, ParseError, ()> for IntegerLiteral {
         }
     }
     fn to_tokens(&self) -> Vec<(Span, Token)> {
-        vec![(self.1, Token::IntegerLiteral(self.0.clone()))]
+        vec![(self.0, Token::IntegerLiteral(self.1.clone()))]
     }
     fn span(&self) -> Span {
+        self.0
+    }
+    fn to_item(self) -> Self::Item {
         self.1
     }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct StringLiteral(pub String, pub Span);
+pub struct StringLiteral(pub Span, pub String);
 impl Syntax<Token, ParseError, ()> for StringLiteral {
+    type Item = String;
     fn from_tokens(tokens: &mut cursor!(Token), context: ParseContext<()>) -> Result<Self> {
         match tokens.clone().next() {
             Some((span, Token::StringLiteral(s))) => {
                 tokens.next();
-                Ok(Self(s, span))
+                Ok(Self(span, s))
             }
             Some((span, got)) => Err(ParseError::recoverable(
                 ParseErrorKind::Mismatch(Expected::String, Got::InvalidToken(got)),
@@ -239,9 +252,12 @@ impl Syntax<Token, ParseError, ()> for StringLiteral {
         }
     }
     fn to_tokens(&self) -> Vec<(Span, Token)> {
-        vec![(self.1, Token::StringLiteral(self.0.clone()))]
+        vec![(self.0, Token::StringLiteral(self.1.clone()))]
     }
     fn span(&self) -> Span {
+        self.0
+    }
+    fn to_item(self) -> Self::Item {
         self.1
     }
 }
@@ -254,6 +270,7 @@ impl<const NAME: &'static str> Debug for Kw<NAME> {
     }
 }
 impl<const NAME: &'static str, D> Syntax<Token, ParseError, D> for Kw<NAME> {
+    type Item = ();
     fn from_tokens(
         tokens: &mut cursor!(Token),
         context: ParseContext<D>,
@@ -293,6 +310,9 @@ impl<const NAME: &'static str, D> Syntax<Token, ParseError, D> for Kw<NAME> {
     }
     fn span(&self) -> Span {
         self.0
+    }
+    fn to_item(self) -> Self::Item {
+        ()
     }
 }
 

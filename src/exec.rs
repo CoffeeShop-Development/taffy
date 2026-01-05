@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::{
     error::CompilerError,
-    lang::{self, Expr, Item, Items, Name, Term},
+    lang::{self, DeclItem, Decls, Expr, ItemOf, NameItem, TermItem, TermLeafItem},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -124,7 +124,7 @@ pub enum ValueShape {
     Array(Vec<Value>),
     Variant(String, Box<Value>),
     Identifier(String),
-    Lazy(Expr),
+    Lazy(ItemOf<Expr>),
     Function(FunctionValue),
 }
 impl ValueShape {
@@ -346,78 +346,84 @@ impl ExecContext {
         self.scopes.pop();
         output
     }
-    
-    pub fn evaluate(&mut self, expr: Expr, keep_identifiers: bool) -> Result<Value, ExecError> {
-        let mut or_terms = expr.items;
+
+    pub fn evaluate(
+        &mut self,
+        mut or_terms: ItemOf<Expr>,
+        keep_identifiers: bool,
+    ) -> Result<Value, ExecError> {
         if or_terms.len() > 1 {
             return Err(ExecError::NotImplemented); // TODO: or combination
         }
-        let mut and_terms = or_terms.remove(0).0.items;
+        let mut and_terms = or_terms.remove(0);
         if and_terms.len() > 1 {
             return Err(ExecError::NotImplemented); // TODO: and combination
         }
-        let mut binary_terms = and_terms.remove(0).0.items;
+        let mut binary_terms = and_terms.remove(0);
         if binary_terms.len() > 1 {
             return Err(ExecError::NotImplemented); // TODO: binary operators
         }
-        let (term, _) = binary_terms.remove(0);
-        match term {
-            Term::Delimited(grouped) => self.evaluate(grouped.item, keep_identifiers),
-            Term::UnaryOperation((prefix, leaf, tight_postfix, loose_postfix)) => {
+        let smallest_term = binary_terms.remove(0);
+        match *smallest_term {
+            TermItem::Delimited(grouped) => self.evaluate(grouped, keep_identifiers),
+            TermItem::UnaryOperation((prefix, leaf, tight_postfix, loose_postfix)) => {
                 if !prefix.is_empty() || !loose_postfix.is_empty() {
                     return Err(ExecError::NotImplemented); // TODO: prefix and loose postfix operations
                 }
-                
+
                 // First evaluate the leaf
                 let mut value = match leaf {
-                    lang::TermLeaf::Name(name) => {
+                    TermLeafItem::Boolean(boolean) => {
+                        ValueShape::Integer((bool::from(boolean) as u8).into()).into()
+                    }
+                    TermLeafItem::Name(name) => {
                         let name = self.evaluate_name(&name)?;
                         if keep_identifiers {
-                            ValueShape::Identifier(name.clone()).into()
+                            ValueShape::Identifier(name).into()
                         } else {
                             self.get(Some(&name)).ok_or(ExecError::InvalidName)?
                         }
                     }
-                    lang::TermLeaf::String(str) => ValueShape::String(str.0).into(),
-                    lang::TermLeaf::Integer(int) => ValueShape::Integer(int.0.into()).into(),
-                    lang::TermLeaf::Intrinsic((_, intrinsic_name)) => {
+                    TermLeafItem::String(str) => ValueShape::String(str).into(),
+                    TermLeafItem::Integer(int) => ValueShape::Integer(int).into(),
+                    lang::TermLeafItem::Intrinsic((_, intrinsic_name)) => {
                         let name = self.evaluate_name(&intrinsic_name)?;
                         self.evaluate_intrinsic(&name, None)
                             .ok_or(ExecError::UnknownIntrinsic)?
                     }
-                    lang::TermLeaf::Structure(_structure) => {
+                    TermLeafItem::Structure(_structure) => {
                         // TODO: Implement structure parsing properly
                         // For now, return an empty structure
                         ValueShape::Structure(HashMap::new()).into()
                     }
-                    lang::TermLeaf::Block(expressions) => {
+                    TermLeafItem::Block(expressions) => {
                         let mut last_value = ValueShape::void().into();
                         self.new_scope(|ctx| {
-                            for (expr, _) in &expressions.item.items {
-                                last_value = ctx.evaluate(expr.clone(), false)?;
+                            for expr in *expressions {
+                                last_value = ctx.evaluate(expr, false)?;
                             }
                             Ok::<_, ExecError>(())
                         })?;
                         last_value
                     }
-                    lang::TermLeaf::Delimited(expr) => self.evaluate(expr.item, keep_identifiers)?,
-                    lang::TermLeaf::Tuple(items) => {
+                    TermLeafItem::Delimited(expr) => self.evaluate(*expr, keep_identifiers)?,
+                    TermLeafItem::Tuple(items) => {
                         let mut values = Vec::new();
-                        for (item, _) in &items.item.items {
-                            values.push(self.evaluate(item.clone(), false)?);
+                        for item in *items {
+                            values.push(self.evaluate(item, false)?);
                         }
                         ValueShape::Tuple(values).into()
                     }
-                    lang::TermLeaf::ElementwiseArray(elements) => {
+                    TermLeafItem::ElementwiseArray(elements) => {
                         let mut values = Vec::new();
-                        for (elem, _) in &elements.item.items {
-                            values.push(self.evaluate(elem.clone(), false)?);
+                        for elem in *elements {
+                            values.push(self.evaluate(elem, false)?);
                         }
                         ValueShape::Array(values).into()
                     }
-                    lang::TermLeaf::ReplicatedArray(inner) => {
-                        let value = self.evaluate(inner.item.0.clone(), false)?;
-                        let count = self.evaluate(inner.item.2.clone(), false)?;
+                    TermLeafItem::ReplicatedArray(inner) => {
+                        let value = self.evaluate(inner.0, false)?;
+                        let count = self.evaluate(inner.2, false)?;
                         if let ValueShape::Integer(n) = count.shape {
                             let count_usize = n.to_string().parse::<usize>().unwrap_or(0);
                             ValueShape::Array(vec![value; count_usize]).into()
@@ -425,19 +431,19 @@ impl ExecContext {
                             return Err(ExecError::NotImplemented);
                         }
                     }
-                    lang::TermLeaf::Union(_) => return Err(ExecError::NotImplemented),
+                    TermLeafItem::Union(_) => return Err(ExecError::NotImplemented),
                 };
-                
+
                 // Now handle tight postfix operators (like function calls)
                 for postfix in tight_postfix {
                     match postfix {
-                        lang::TightPostfixUnaryOperator::Call(args) => {
+                        lang::TightPostfixUnaryOperatorItem::Call(args) => {
                             // Evaluate the arguments
                             let mut arg_values = Vec::new();
-                            for (arg, _) in &args.item.items {
-                                arg_values.push(self.evaluate(arg.clone(), false)?);
+                            for arg in args {
+                                arg_values.push(self.evaluate(arg, false)?);
                             }
-                            
+
                             // Call the function
                             match &value.shape {
                                 ValueShape::Function(FunctionValue::Intrinsic(intrinsic)) => {
@@ -449,21 +455,25 @@ impl ExecContext {
                                 _ => return Err(ExecError::NotImplemented),
                             }
                         }
-                        lang::TightPostfixUnaryOperator::Shape(_) => {
+                        lang::TightPostfixUnaryOperatorItem::Shape(_) => {
                             return Err(ExecError::NotImplemented); // TODO: shape operators
                         }
                     }
                 }
-                
+
                 Ok(value)
             }
-            Term::Declaration((_, pattern, _, expr)) => {
+            TermItem::Declaration((_, pattern, _, expr)) => {
                 let value = self.evaluate(expr, false)?;
                 // For now, only handle simple name bindings
                 match pattern {
-                    lang::Pattern::Binder(name) => {
+                    lang::PatternItem::Binder(name) => {
                         let var_name = self.evaluate_name(&name)?;
-                        self.scopes.last_mut().unwrap().locals.insert(var_name, value.clone());
+                        self.scopes
+                            .last_mut()
+                            .unwrap()
+                            .locals
+                            .insert(var_name, value.clone());
                         Ok(value)
                     }
                     _ => Err(ExecError::NotImplemented),
@@ -471,26 +481,24 @@ impl ExecContext {
             }
         }
     }
-    
-    pub fn evaluate_name(&mut self, name: &Name) -> Result<String, ExecError> {
+
+    pub fn evaluate_name(&mut self, name: &NameItem) -> Result<String, ExecError> {
         match name {
-            Name::Raw(ident) => Ok(ident.repr.clone()),
-            Name::FromExpression((_, expr)) => {
-                match self.evaluate(expr.clone(), true)? {
-                    Value {
-                        shape: ValueShape::Identifier(ident),
-                        ..
-                    } => Ok(ident),
-                    Value {
-                        shape: ValueShape::String(s),
-                        ..
-                    } => Ok(s),
-                    _ => Err(ExecError::InvalidName),
-                }
-            }
+            NameItem::Raw(ident) => Ok(ident.clone()),
+            NameItem::FromExpression((_, expr)) => match self.evaluate(expr.clone(), true)? {
+                Value {
+                    shape: ValueShape::Identifier(ident),
+                    ..
+                } => Ok(ident),
+                Value {
+                    shape: ValueShape::String(s),
+                    ..
+                } => Ok(s),
+                _ => Err(ExecError::InvalidName),
+            },
         }
     }
-    
+
     pub fn get(&self, name: Option<&str>) -> Option<Value> {
         for scope in self.scopes.iter().rev() {
             if let Some(name) = name {
@@ -505,15 +513,15 @@ impl ExecContext {
         }
         None
     }
-    
+
     pub fn evaluate_intrinsic(
         &mut self,
         name: &str,
-        args: Option<Vec<Expr>>,
+        args: Option<Vec<ItemOf<Expr>>>,
     ) -> Option<Value> {
         let make_fn: fn(fn(Vec<Value>) -> Value) -> Value =
             |f| ValueShape::Function(FunctionValue::Intrinsic(Arc::new(f))).into();
-        
+
         let result: Value = match name {
             "dbg" => make_fn(|args| {
                 for arg in args {
@@ -533,18 +541,16 @@ impl ExecContext {
             }),
             _ => return None,
         };
-        
+
         if let Some(args) = args {
             if let ValueShape::Function(function) = &result.shape {
                 match function {
                     FunctionValue::FunctionID(_) => None, // TODO
-                    FunctionValue::Intrinsic(intrinsic) => {
-                        Some(intrinsic(
-                            args.iter()
-                                .map(|arg| self.evaluate(arg.clone(), false).unwrap())
-                                .collect(),
-                        ))
-                    }
+                    FunctionValue::Intrinsic(intrinsic) => Some(intrinsic(
+                        args.into_iter()
+                            .map(|arg| self.evaluate(arg, false).unwrap())
+                            .collect(),
+                    )),
                 }
             } else {
                 None
@@ -555,38 +561,42 @@ impl ExecContext {
     }
 }
 
-pub fn execute_main(items: Items) -> Result<Value, CompilerError> {
+pub fn execute_main(items: ItemOf<Decls>) -> Result<Value, CompilerError> {
     let mut context = ExecContext::new();
-    for (item, _) in items.items {
+    for item in items {
         match item {
-            Item::Function(func_decl) => {
+            DeclItem::Function(func_decl) => {
                 let (name, params, _, expr) = func_decl;
-                let func_name = context.evaluate_name(&name)
-                    .map_err(|_| CompilerError::IO(std::io::Error::new(
-                        std::io::ErrorKind::Other, 
-                        "Failed to evaluate function name"
-                    )))?;
-                
+                let func_name = context.evaluate_name(&name).map_err(|_| {
+                    CompilerError::IO(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Failed to evaluate function name",
+                    ))
+                })?;
+
                 if func_name == "main" {
-                    if params.is_none() || params.as_ref().unwrap().item.items.is_empty() {
-                        return context.new_scope(|ctx| ctx.evaluate(expr, false))
-                            .map_err(|e| CompilerError::IO(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("Execution error: {:?}", e)
-                            )));
+                    if params.is_none() || params.as_ref().unwrap().is_empty() {
+                        return context
+                            .new_scope(|ctx| ctx.evaluate(expr, false))
+                            .map_err(|e| {
+                                CompilerError::IO(std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    format!("Execution error: {:?}", e),
+                                ))
+                            });
                     }
                 }
             }
-            Item::Marking(_) => {
+            DeclItem::Marking(_) => {
                 // Markings are processed but don't execute
             }
-            Item::Constraint(_) => {
+            DeclItem::Constraint(_) => {
                 // Constraints are for type checking
             }
         }
     }
     Err(CompilerError::IO(std::io::Error::new(
         std::io::ErrorKind::Other,
-        "No main function found"
+        "No main function found",
     )))
 }

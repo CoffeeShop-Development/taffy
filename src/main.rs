@@ -20,7 +20,7 @@ use tactical::{ParseContext, Span, Syntax, cursor};
 
 use crate::{
     error::{CompilerError, ParseError}, 
-    lang::Items, 
+    lang::Decls, 
     tok::tokenise,
     exec::execute_main,
 };
@@ -33,7 +33,7 @@ fn compiler_main() -> std::result::Result<(), CompilerError> {
         .map(|(span, _)| span.next_column())
         .unwrap_or(Span::start());
     let mut iter = tokens.iter().cloned();
-    let items = Items::from_tokens(
+    let items = Decls::from_tokens(
         &mut iter,
         ParseContext {
             eof_row: eof_span.end_row(),
@@ -48,6 +48,8 @@ fn compiler_main() -> std::result::Result<(), CompilerError> {
     }
 
     println!("Resultant syntax tree: {:?}", items);
+    let items = items.to_item();
+    println!("Simplified syntax tree: {:?}", items);
     println!("\n=== Executing ===\n");
     
     let result = execute_main(items)?;

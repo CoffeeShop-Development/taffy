@@ -1,25 +1,44 @@
 use std::fmt::Display;
 
 use tactical::{
-    DenyTrailing, Force, ParseContext, ParseResultExt, Punctuated, RequireOne, RequireTrailing,
+    DenyTrailing, Force, ParseContext, Punctuated, AtLeast, RequireTrailing,
     Span, Syntax, Try, cursor, syntax,
 };
 
 use crate::{
     combo::{Brace, Bracket, Fused, Grouped, Parenthesis},
-    error::{Expected, Got, ParseError, ParseErrorKind},
+    error::{Expected, Got, Msg, ParseError, ParseErrorKind},
     tok::{self, Kw, Token},
 };
 
 pub type Result<T> = std::result::Result<T, ParseError>;
+pub type ItemOf<T> = <T as Syntax<Token, ParseError, ()>>::Item;
 
-type Intrinsic = (Tok![@], Name);
-type Marking = (Tok![$], Name);
+pub type Intrinsic = (Tok![@], Name);
+pub type Marking = (Tok![$], Name);
+
+syntax!(
+    [#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]]
+    pub enum BooleanLiteral: Token, () => !ParseError[ParseError::branches_failed] {
+        "true" => True(Kw<"true">),
+        "false" => False(Kw<"false">),
+    }
+);
+impl From<BooleanLiteralItem> for bool {
+    fn from(value: BooleanLiteralItem) -> Self {
+        match value {
+            BooleanLiteralItem::True(_) => true,
+            BooleanLiteralItem::False(_) => false,
+        }
+    }
+}
 
 syntax!(
     [#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]]
     pub enum TermLeaf: Token, () => !ParseError[ParseError::branches_failed] {
+        "boolean literal" => Boolean(BooleanLiteral),
         "name" => Name(Name),
+
         "string" => String(tok::StringLiteral),
         "integer" => Integer(tok::IntegerLiteral),
         "intrinsic" => Intrinsic(Intrinsic),
@@ -158,6 +177,7 @@ pub struct Mutability {
     pub writeable: bool,
 }
 impl Syntax<Token, ParseError, ()> for Mutability {
+    type Item = Self;
     fn from_tokens(tokens: &mut cursor!(Token), context: ParseContext<()>) -> Result<Self> {
         let spec = tok::Ident::from_tokens(tokens, context)?;
         let span = spec.span;
@@ -246,6 +266,9 @@ impl Syntax<Token, ParseError, ()> for Mutability {
     fn span(&self) -> Span {
         self.span
     }
+    fn to_item(self) -> Self::Item {
+        self
+    }
 }
 
 syntax!(
@@ -256,21 +279,25 @@ syntax!(
     }
 );
 
-pub type BinaryExpr = Punctuated<Term, OperatorPunctCons, DenyTrailing, RequireOne>;
-pub type AndExpr = Punctuated<BinaryExpr, Kw<"and">, DenyTrailing, RequireOne>;
-pub type Expr = Punctuated<AndExpr, Kw<"or">, DenyTrailing, RequireOne>;
+pub type BinaryExpr = Punctuated<Msg<Box<Term>, "expected expression">, OperatorPunctCons, DenyTrailing, AtLeast<1>>;
+pub type AndExpr = Punctuated<Msg<BinaryExpr, "expected expression">, OperatorPunctCons, DenyTrailing, AtLeast<1>>;
+pub type Expr = Punctuated<Msg<AndExpr, "expected expression">, OperatorPunctCons, DenyTrailing, AtLeast<1>>;
 
-pub type Field = (Name, Force<Tok![:]>, Force<Expr>);
+pub type Field = Msg<(Name, Force<Tok![:]>, Force<Expr>), "expected field">;
 
-pub type Structure = Grouped<Brace, (Try<Field>, Option<Punctuated<Field, Tok![,]>>)>;
+pub type Structure =
+    Msg<Grouped<Brace, (Try<Field>, Option<Punctuated<Field, Tok![,]>>)>, "expected structure">;
 
 pub type Delimited = Grouped<Parenthesis, Expr>;
-pub type Tuple = Grouped<Parenthesis, Punctuated<Expr, Tok![,]>>;
+pub type Tuple = Msg<Grouped<Parenthesis, Punctuated<Expr, Tok![,]>>, "expected tuple">;
 
 pub type ElementwiseArray = Grouped<Bracket, Punctuated<Expr, Tok![,]>>;
 pub type ReplicatedArray = Grouped<Bracket, (Expr, Tok![**], Expr)>;
 
-pub type Variant = (Name, Option<(Tok![:], Force<Expr>)>);
+pub type Variant = (
+    Name,
+    Option<(Tok![:], Force<Msg<Expr, "expected type expression">>)>,
+);
 pub type Union = (Tok![<], Punctuated<Variant, Tok![,]>, Tok![>]);
 
 pub type Block = Grouped<Brace, Punctuated<Expr, Tok![;]>>;
@@ -310,11 +337,11 @@ syntax!(
 
 syntax!(
     [#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]]
-    pub enum Item: Token, () => !ParseError[ParseError::branches_failed] {
+    pub enum Decl: Token, () => !ParseError[ParseError::branches_failed] {
         "function" => Function(FunctionDecl),
         "marking" => Marking(MarkingDecl),
         "constraint" => Constraint((ForallSpec, Constraint))
     }
 );
 
-pub type Items = Punctuated<Item, Force<Tok![;]>>;
+pub type Decls = Punctuated<Decl, Force<Tok![;]>>;

@@ -4,7 +4,7 @@ use std::{
     io,
 };
 
-use tactical::{HasRecoverability, Recoverability, Span};
+use tactical::{ParseContext, ParseResultExt, Recoverability, Span, Syntax, SyntaxError, cursor};
 use thiserror::Error;
 
 use crate::{
@@ -104,6 +104,7 @@ pub enum ParseErrorKind {
     LeftoverToken(Token),
     AllBranchesFailed(HashMap<String, ParseError>),
     Unfused,
+    Custom(String),
 }
 impl Display for ParseErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -125,6 +126,7 @@ impl Display for ParseErrorKind {
                 Ok(())
             }
             ParseErrorKind::Unfused => write!(f, "elements were not fused"),
+            Self::Custom(message) => write!(f, "{message}"),
         }
     }
 }
@@ -139,7 +141,7 @@ impl Display for ParseError {
         write!(f, "{} error: `{}`", self.recoverability, self.kind)
     }
 }
-impl HasRecoverability for ParseError {
+impl SyntaxError for ParseError {
     fn recoverability(&self) -> Recoverability {
         self.recoverability
     }
@@ -232,5 +234,35 @@ impl Display for CompilerError {
             // CompilerError::Exec(err) => write!(f, "Execution error: {err}"),
             CompilerError::IO(error) => write!(f, "I/O error: {error}"),
         }
+    }
+}
+
+/// Changes the message of recoverable parse errors.
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Msg<S, const MESSAGE: &'static str>(pub S);
+impl<Tok, D, T: Syntax<Tok, ParseError, D>, const MESSAGE: &'static str> Syntax<Tok, ParseError, D>
+    for Msg<T, MESSAGE>
+{
+    type Item = T::Item;
+    fn from_tokens(
+        tokens: &mut cursor!(Tok),
+        context: ParseContext<D>,
+    ) -> Result<Self, ParseError> {
+        match T::from_tokens(tokens, context).nest()? {
+            Ok(element) => Ok(Self(element)),
+            Err(err) => Err(ParseError {
+                kind: ParseErrorKind::Custom(MESSAGE.to_owned()),
+                ..err
+            }),
+        }
+    }
+    fn to_tokens(&self) -> Vec<(Span, Tok)> {
+        self.0.to_tokens()
+    }
+    fn span(&self) -> Span {
+        self.0.span()
+    }
+    fn to_item(self) -> Self::Item {
+        self.0.to_item()
     }
 }

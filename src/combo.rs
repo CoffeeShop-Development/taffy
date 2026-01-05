@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData};
 
 use tactical::{ParseContext, Span, Syntax, cursor};
 
@@ -27,19 +27,20 @@ impl Delimiter for Brace {
     const DELIMITER: DelimiterKind = DelimiterKind::Brace;
 }
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Grouped<D: Delimiter, S: Syntax<Token, ParseError, ()>> {
-    pub item: S,
+pub struct Grouped<D: Delimiter, T: Syntax<Token, ParseError, ()>> {
+    pub item: T,
     pub span: Span,
     _pd: PhantomData<D>,
 }
-impl<D: Delimiter, S: Syntax<Token, ParseError, ()>> Syntax<Token, ParseError, ()>
-    for Grouped<D, S>
+impl<D: Delimiter, T: Syntax<Token, ParseError, ()>> Syntax<Token, ParseError, ()>
+    for Grouped<D, T>
 {
+    type Item = T::Item;
     fn from_tokens(tokens: &mut cursor!(Token), context: ParseContext<()>) -> Result<Self> {
         match tokens.next() {
             Some((span, Token::Group(delimiter, inner_tokens))) if D::DELIMITER == delimiter => {
                 let mut iter = inner_tokens.into_iter();
-                let item = S::from_tokens(&mut iter, context)?;
+                let item = T::from_tokens(&mut iter, context)?;
                 if let Some((span, leftover)) = iter.next() {
                     return Err(ParseError::recoverable(
                         ParseErrorKind::LeftoverToken(leftover),
@@ -73,7 +74,10 @@ impl<D: Delimiter, S: Syntax<Token, ParseError, ()>> Syntax<Token, ParseError, (
         vec![(self.span, Token::Group(D::DELIMITER, self.item.to_tokens()))]
     }
     fn span(&self) -> Span {
-        self.span + self.item.span()
+        self.span
+    }
+    fn to_item(self) -> Self::Item {
+        self.item.to_item()
     }
 }
 
@@ -83,6 +87,7 @@ pub struct Fused<T, U>(pub T, pub U);
 impl<Tok, D: Clone, T: Syntax<Tok, ParseError, D>, U: Syntax<Tok, ParseError, D>>
     Syntax<Tok, ParseError, D> for Fused<T, U>
 {
+    type Item = (T::Item, U::Item);
     fn from_tokens(tokens: &mut cursor!(Tok), context: ParseContext<D>) -> Result<Self> {
         let left = T::from_tokens(tokens, context.clone())?;
         let right = U::from_tokens(tokens, context)?;
@@ -101,5 +106,8 @@ impl<Tok, D: Clone, T: Syntax<Tok, ParseError, D>, U: Syntax<Tok, ParseError, D>
     }
     fn span(&self) -> Span {
         self.0.span() + self.1.span()
+    }
+    fn to_item(self) -> Self::Item {
+        (self.0.to_item(), self.1.to_item())
     }
 }
